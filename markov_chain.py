@@ -2,8 +2,10 @@ import MeCab
 import csv
 import random
 import sys
+from argparse import ArgumentParser
 
-mecab = MeCab.Tagger("-Owakati")
+neologd = '/usr/local/lib/mecab/dic/mecab-ipadic-neologd'
+mecab = MeCab.Tagger("-Owakati -d " + neologd)
 BOS = '[BOS]'
 EOS = '[EOS]'
 
@@ -11,62 +13,63 @@ def parse(s):
     """形態素解析（分かち書き）"""
     return mecab.parse(s).strip().split(' ')
 
+def normalize(table):
+    """出現確率の総和が 1.0 になるように遷移行列を正規化する"""
+    for ctx in table.keys():
+        n = 0
+        for w in table[ctx].keys(): n += table[ctx][w]
+        for w in table[ctx].keys(): table[ctx][w] /= n
+
 def train(ctx_len, dataset):
-    tp = {}  # transition probability
+    table = {}  # transition probability
     for sen in dataset:
         words = [BOS] + sen + [EOS]
         ctx = tuple([None for i in range(ctx_len)])
         # 単語のペアの回数を数える
         for w in words:
-            if ctx not in tp:
-                tp[ctx] = {}
-            if w not in tp:
-                tp[ctx][w] = 0
-
-            tp[ctx][w] += 1
+            if ctx not in table: table[ctx] = {}
+            if w not in table: table[ctx][w] = 0
+            table[ctx][w] += 1
             ctx = tuple(list(ctx)[1:] + [w])
 
-    # 出現確率に変換
-    for ctx in tp.keys():
-        n = 0
-        for w in tp[ctx].keys():
-            n += tp[ctx][w]
-        for w in tp[ctx].keys():
-            tp[ctx][w] /= n
-    return tp
+    normalize(table)
+    return table
 
-def choose_next_word(tp, ctx):
+def choose_next_word(table, ctx):
     x = random.random()
     p = 0.0
-    for w in tp[ctx].keys():
-        p += tp[ctx][w]
-        if p > x:
-            return w
+    for w in table[ctx].keys():
+        p += table[ctx][w]
+        if p > x: return w
     return w
 
-def generate(ctx_len, tp):
+def generate(ctx_len, table):
     sen = []
     ctx = tuple([None for i in range(ctx_len-1)] + [BOS])
     while True:
-        w = choose_next_word(tp, ctx)
-        if w == EOS:
-            break
+        w = choose_next_word(table, ctx)
+        if w == EOS: break
         sen.append(w)
         ctx = tuple(list(ctx)[1:] + [w])
     return sen
 
 if __name__ == '__main__':
+    parser = ArgumentParser(description='Lens poem generation by Markov chain')
+    parser.add_argument('files', metavar='FILE', type=str, nargs='+', help='CSV file (training data)')
+    parser.add_argument('--context', metavar='N', type=int, help='context length of Markov chain')
+    args = parser.parse_args()
+
     dataset = []
-    for fpath in sys.argv[1:]:
+    for fpath in args.files:
         with open(fpath, 'r') as fin:
             for row in csv.DictReader(fin):
-                s = row['poem'].split('\\n')[0]
-                dataset.append(s)
+                for s in row['poem'].split('\\n'):
+                    dataset.append(s)
 
-    ctx_len = 2
-    tp = train(ctx_len, [parse(s) for s in dataset])
+    ctx_len = args.context
+    table = train(ctx_len, [parse(s) for s in dataset])
     while True:
-        sen = ''.join(generate(ctx_len, tp))
+        sen = ''.join(generate(ctx_len, table))
         if sen not in dataset:
             print(sen)
             break
